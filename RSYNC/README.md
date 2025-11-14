@@ -119,16 +119,8 @@ Exécuter chaque jour à 3h :
         backups/
 
 ## 9. Dépannage
-
-### Fonctionne manuellement mais pas avec cron
-
-Ajouter au début du script :
-
-``` bash
-export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-```
-
 ### si SCP demande un mot de passe
 
 Vérifier ssh-copy-id.
 (verifier la key)
+
