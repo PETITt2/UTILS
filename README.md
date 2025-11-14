@@ -6,6 +6,7 @@
 |---------------                       |------------------------|
 |PXE sur un Serveur Linux en Routeur   |***/SLR_PXE/README.md***|
 |Serveur DHCP dans une VM Proxmox      |***/serveurDHCP/installation.md***|
+|Sauvegarde Backup sur Linux           |***/RSYNC/README.md***  |
 |                                      |                        |
-|                                      |                        |
+
 |                                      |                        |
