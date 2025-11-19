@@ -1,126 +1,225 @@
-# RSYNC + CRONTAB
+# Sauvegarde Automatique du DHCP vers un Serveur de Stockage via SSH + Chiffrement GPG
+
+## Objectif de la documentation
+
+Ce guide explique comment mettre en place **une sauvegarde automatique, chiffrée et transférée via SSH**, entre deux serveurs Debian.
+
+Cette documentation inclut :
+
+* La préparation des serveurs
+* L'installation de `rsync` et `gpg`
+* La génération et l'export des clés GPG
+* La mise en place d'un script de sauvegarde **chiffré**
+* La planification automatique avec `cron`
+
 ---
-## Sauvegardes automatiques avec rsync et crontab
-*Comment utiliser l'outils rsync sous linux pour configurer un systeme de sauvegarde automatique avec crontab. Cela inclus la creation de script pour faire la sauvegarde et l'envoyer sur une machine distante (ssh) et l'execution de ce script sera automatisé par contab.*
 
+## 1. Architecture du système
+
+* **Serveur DHCP (192.168.50.4)**
+
+  * Source des fichiers à sauvegarder : `/etc/dhcp/dhcpd.conf`
+  * Chiffre la sauvegarde avec GPG
+  * Envoie la sauvegarde chiffrée au serveur FTP via SSH
+
+* **Serveur FTP (192.168.50.5)**
+
+  * Sert uniquement de stockage
+  * Reçoit des fichiers déjà chiffrés
+  * Stocke les sauvegardes dans : `/backup/dhcp/`
+
+Toutes les transmissions sont sécurisées par **SSH + chiffrement GPG**.
 
 ---
-#### Note : Tout les script sont a adapter il y a des @IP, des user et repertoires qui sont a creer ou a modifier avec la bonne dénomination
+
+## 2. Préparation des serveurs
+
+### 2.1. Mise à jour
+
+Sur les deux serveurs :
+
+```bash
+apt -y update
+apt -y upgrade
+```
+
+### 2.2. Installation des outils nécessaires
+
+Sur les deux serveurs :
+
+```bash
+apt install -y rsync openssh-server gnupg
+```
+
+### 2.3. Préparation du stockage (Serveur FTP)
+
+```bash
+mkdir -p /backup/dhcp
+chmod 700 /backup/dhcp
+```
+
 ---
 
+## 3. Mise en place du chiffrement GPG
 
-## 1. Prérequis
+### 3.1. Création de la clé GPG (Serveur FTP)
 
-Avant de commencer, assurez-vous que les outils suivants sont installés
-:
-```requirement
+Le serveur FTP héberge la **clé publique**, car c’est lui qui doit pouvoir déchiffrer.
 
--   rsync
--   cron (ou cronie selon la distribution)
--   scp (souvent inclus avec OpenSSH)
--   ssh-keygen (pour l'authentification sans mot de passe)
+```bash
+gpg --quick-generate-key "backup@ftp.local" default default never
 ```
 
-Installation sous Debian/Ubuntu :
-```cmd
-    sudo apt install rsync openssh-client
-```
-Installation sous CentOS/RHEL :
-```cmd
-    sudo yum install rsync openssh-clients
+Vérifier :
+
+```bash
+gpg --list-keys
 ```
 
-## 2. Création du script de sauvegarde
+Exporter la **clé publique** :
 
-Créer un fichier de script :
-```cmd
-    backup_rsync.sh
+```bash
+gpg --export -a "backup@ftp.local" > /root/backup_pubkey.asc
 ```
-Contenu du script :
 
-``` bash
+---
+
+### 3.2. Copie de la clé publique vers le serveur DHCP
+
+Depuis le serveur FTP :
+
+```bash
+scp /root/backup_pubkey.asc root@192.168.50.4:/root/
+```
+
+Sur le serveur DHCP, importer la clé :
+
+```bash
+gpg --import /root/backup_pubkey.asc
+```
+
+---
+
+## 4. Mise en place de l’authentification SSH
+
+### 4.1. Génération de la clé SSH (Serveur DHCP)
+
+```bash
+ssh-keygen -t ed25519
+```
+
+### 4.2. Copier la clé publique vers le serveur FTP
+
+```bash
+ssh-copy-id root@192.168.50.5
+```
+
+Vérification :
+
+```bash
+ssh root@192.168.50.5 "echo Connexion SSH OK"
+```
+
+---
+
+## 5. Script de sauvegarde chiffrée (Serveur DHCP)
+
+Créer :
+
+```bash
+nano /usr/local/bin/backup_to_ftp_gpg.sh
+```
+
+Contenu :
+
+```bash
 #!/bin/bash
+DATE=$(date +%F_%H-%M-%S)
+SRC="/etc/dhcp/dhcpd.conf"
+TMP_FILE="/tmp/dhcpd.conf-$DATE.gpg"
+DEST="root@192.168.50.5:/backup/dhcp/"
 
-# Configuration
+# Chiffrement GPG
+gpg --batch --yes --encrypt -r "backup@ftp.local" -o "$TMP_FILE" "$SRC"
 
-SOURCE="/home/user/dossier_a_sauvegarder/"
-DEST="/home/user/backups/"
+# Transfert via SSH
+rsync -avz "$TMP_FILE" "$DEST"
 
-REMOTE_USER="root"
-REMOTE_HOST="192.168.50.2"
-REMOTE_PATH="/home/backup_remote/"
+# Log
+echo "[$(date)] Backup envoyée : $TMP_FILE" >> /var/log/backup_dhcp_gpg.log
 
-LOG="/home/user/rsync_backup.log"
-
-echo "=== Début backup local $(date) ===" >> "$LOG"
-
-# Sauvegarde locale avec rsync
-rsync -avh --delete "$SOURCE" "$DEST" --log-file="$LOG"
-
-echo "=== Envoi des fichiers via SCP $(date) ===" >> "$LOG"
-
-# Envoi des fichiers vers une autre machine
-scp -r "$DEST"/* "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH" >> "$LOG" 2>&1
-
-echo "=== Fin du backup $(date) ===" >> "$LOG"
+# Nettoyage
+rm -f "$TMP_FILE"
 ```
 
-Rendre le script exécutable :
+Rendre exécutable :
 
-    chmod +x backup_rsync.sh
-
-## 3. Vérification du script
-
-Exécuter manuellement :
-```cmd
-    backup_rsync.sh
+```bash
+chmod +x /usr/local/bin/backup_to_ftp_gpg.sh
 ```
-Vérifier les logs :
 
-    rsync_backup.log
+---
 
-## 4. Configuration SSH sans mot de passe
+## 6. Planification automatique via CRON
 
-Générer une clé :
+Éditer :
 
-    ssh-keygen
+```bash
+crontab -e
+```
 
-Copier vers la machine distante :
+Ajouter :
 
-    ssh-copy-id remote_user@192.168.1.50
+```bash
+0 23 * * * /usr/local/bin/backup_to_ftp_gpg.sh
+```
 
-## 5. Configuration cron
+La sauvegarde sera exécutée **tous les jours à 23h**.
 
-Ouvrir la crontab :
+---
 
-    crontab -e
+## 7. Tests et vérifications
 
-Exécuter chaque jour à 3h :
+### 7.1. Test manuel
 
-    0 3 * * * backup_rsync.sh
+```bash
+/usr/local/bin/backup_to_ftp_gpg.sh
+```
 
-## 6. Vérification cron
+### 7.2. Vérifier sur le serveur FTP
 
-    grep CRON /var/log/syslog
+```bash
+ls /backup/dhcp/
+```
 
-## 7. Notes importantes
+### 7.3. Vérifier les logs
 
-1.  Utiliser des chemins absolus.
-2.  Vérifier les permissions.
-3.  Tester rsync avec --dry-run.
-4.  Vérifier les logs régulièrement.
+```bash
+tail -n 20 /var/log/backup_dhcp_gpg.log
+```
 
-## 8. Structure recommandée
+---
 
-    /home/user/
-        backup_rsync.sh
-        rsync_backup.log
-        dossier_a_sauvegarder/
-        backups/
+## 8. Sécurisation
 
-## 9. Dépannage
-### si SCP demande un mot de passe
+### Droits SSH
 
-Vérifier ssh-copy-id.
-(verifier la key)
+```bash
+chmod 700 /root/.ssh
+chmod 600 /root/.ssh/id_ed25519
+chmod 644 /root/.ssh/id_ed25519.pub
+```
 
+### Droits GPG
+
+```bash
+chmod 700 /root/.gnupg
+```
+
+### Droits dossier backup
+
+```bash
+chmod 700 /backup/dhcp
+```
+
+---
